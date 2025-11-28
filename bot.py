@@ -22,17 +22,11 @@ intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
 
-# -------------------------------------------------------------
-# Utility to run shell commands
-# -------------------------------------------------------------
 def run_cmd(cmd):
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     return proc.returncode, proc.stdout, proc.stderr
 
 
-# -------------------------------------------------------------
-# Free voice effects (FFmpeg filter effects)
-# -------------------------------------------------------------
 FFMPEG_EFFECTS = {
     "deep": lambda inp, out: [
         "ffmpeg", "-y", "-i", inp,
@@ -61,19 +55,12 @@ FFMPEG_EFFECTS = {
     ],
 }
 
-
-# -------------------------------------------------------------
-# Bot Ready Event
-# -------------------------------------------------------------
 @bot.event
 async def on_ready():
-    print(f"Logged in as: {bot.user.name}")
-    print("Bot is ready to change voices!")
+    print(f"Logged in as: {bot.user.name} (ID: {bot.user.id})")
+    print("Bot is ready!")
 
 
-# -------------------------------------------------------------
-# Download file function
-# -------------------------------------------------------------
 async def download_file(url, dest_path):
     async with aiohttp.ClientSession() as sess:
         async with sess.get(url) as resp:
@@ -82,72 +69,56 @@ async def download_file(url, dest_path):
                 f.write(await resp.read())
 
 
-# -------------------------------------------------------------
-# MAIN COMMAND
-# -------------------------------------------------------------
 @bot.command(name="convert")
 async def convert(ctx, effect: str = "deep"):
-    
-    # Check if attachment exists
     if not ctx.message.attachments:
-        await ctx.reply("❌ Please attach a video file.\nExample: `!convert deep` + attach video")
+        await ctx.reply("❌ Attach a video.\nExample: `!convert deep` + attach video")
         return
-    
+
     effect = effect.lower()
     if effect not in FFMPEG_EFFECTS:
-        await ctx.reply(f"❌ Unknown effect `{effect}`.\nEffects: deep, chipmunk, robot, slow, fast")
+        await ctx.reply("❌ Unknown effect. Use: deep, chipmunk, robot, slow, fast")
         return
 
     att = ctx.message.attachments[0]
-
     await ctx.reply("⬇️ Downloading video...")
 
-    tmpdir = tempfile.mkdtemp(prefix="bot_")
+    tmp = tempfile.mkdtemp(prefix="bot_")
+
     try:
-        # Paths
-        video_path = os.path.join(tmpdir, att.filename)
-        extracted = os.path.join(tmpdir, "audio.wav")
-        processed = os.path.join(tmpdir, "processed.wav")
-        output_mp3 = os.path.join(tmpdir, "voice_changed.mp3")
+        video = os.path.join(tmp, att.filename)
+        audio = os.path.join(tmp, "audio.wav")
+        processed = os.path.join(tmp, "processed.wav")
+        output = os.path.join(tmp, "voice_changed.mp3")
 
-        # Download video
-        await download_file(att.url, video_path)
+        await download_file(att.url, video)
 
-        # Extract audio
         await ctx.reply("🎵 Extracting audio...")
-        cmd_extract = ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", extracted]
-        code, out, err = run_cmd(cmd_extract)
+        code, out, err = run_cmd(
+            ["ffmpeg", "-y", "-i", video, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", audio]
+        )
         if code != 0:
-            await ctx.reply("❌ Error extracting audio!")
+            await ctx.reply("❌ Audio extract failed.")
             return
 
-        # Apply effect
         await ctx.reply(f"🔊 Applying `{effect}` effect...")
-        cmd_effect = FFMPEG_EFFECTS[effect](extracted, processed)
-        code, out, err = run_cmd(cmd_effect)
+        code, out, err = run_cmd(FFMPEG_EFFECTS[effect](audio, processed))
         if code != 0:
-            await ctx.reply("❌ Error applying effect!")
+            await ctx.reply("❌ Effect processing failed.")
             return
 
-        # Convert to MP3
         await ctx.reply("🎧 Converting to MP3...")
-        cmd_mp3 = ["ffmpeg", "-y", "-i", processed, "-vn", "-codec:a", "libmp3lame", "-qscale:a", "2", output_mp3]
-        code, out, err = run_cmd(cmd_mp3)
+        code, out, err = run_cmd(
+            ["ffmpeg", "-y", "-i", processed, "-vn", "-codec:a", "libmp3lame", "-qscale:a", "2", output]
+        )
         if code != 0:
-            await ctx.reply("❌ Error converting to MP3!")
+            await ctx.reply("❌ MP3 conversion failed.")
             return
 
-        # Send result
-        await ctx.reply("✅ **Voice changed successfully!**\nHere is your MP3:", file=discord.File(output_mp3))
-
-    except Exception as e:
-        await ctx.reply(f"❌ Error: `{e}`")
+        await ctx.reply("✅ Done!", file=discord.File(output))
 
     finally:
-        shutil.rmtree(tmpdir, ignore_errors=True)
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
-# -------------------------------------------------------------
-# RUN BOT
-# -------------------------------------------------------------
 bot.run(TOKEN)
