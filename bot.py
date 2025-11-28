@@ -1,0 +1,153 @@
+# bot.py
+# FREE Discord Voice Changer Bot
+# Video -> Extract Audio -> Apply Effect -> Return MP3
+
+import os
+import asyncio
+import aiohttp
+import shutil
+import subprocess
+import tempfile
+
+import discord
+from discord.ext import commands
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TOKEN = os.getenv("DISCORD_TOKEN")  # Bot Token from .env file
+
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+
+
+# -------------------------------------------------------------
+# Utility to run shell commands
+# -------------------------------------------------------------
+def run_cmd(cmd):
+    proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+# -------------------------------------------------------------
+# Free voice effects (FFmpeg filter effects)
+# -------------------------------------------------------------
+FFMPEG_EFFECTS = {
+    "deep": lambda inp, out: [
+        "ffmpeg", "-y", "-i", inp,
+        "-af", "asetrate=44100*0.8,aresample=44100,atempo=1",
+        "-vn", out
+    ],
+    "chipmunk": lambda inp, out: [
+        "ffmpeg", "-y", "-i", inp,
+        "-af", "asetrate=44100*1.5,aresample=44100,atempo=0.9",
+        "-vn", out
+    ],
+    "robot": lambda inp, out: [
+        "ffmpeg", "-y", "-i", inp,
+        "-af", "afftfilt=real='re*0.6':imag='im*0.6',aecho=0.8:0.9:1000:0.3",
+        "-vn", out
+    ],
+    "slow": lambda inp, out: [
+        "ffmpeg", "-y", "-i", inp,
+        "-af", "atempo=0.85",
+        "-vn", out
+    ],
+    "fast": lambda inp, out: [
+        "ffmpeg", "-y", "-i", inp,
+        "-af", "atempo=1.3",
+        "-vn", out
+    ],
+}
+
+
+# -------------------------------------------------------------
+# Bot Ready Event
+# -------------------------------------------------------------
+@bot.event
+async def on_ready():
+    print(f"Logged in as: {bot.user.name}")
+    print("Bot is ready to change voices!")
+
+
+# -------------------------------------------------------------
+# Download file function
+# -------------------------------------------------------------
+async def download_file(url, dest_path):
+    async with aiohttp.ClientSession() as sess:
+        async with sess.get(url) as resp:
+            resp.raise_for_status()
+            with open(dest_path, "wb") as f:
+                f.write(await resp.read())
+
+
+# -------------------------------------------------------------
+# MAIN COMMAND
+# -------------------------------------------------------------
+@bot.command(name="convert")
+async def convert(ctx, effect: str = "deep"):
+    
+    # Check if attachment exists
+    if not ctx.message.attachments:
+        await ctx.reply("❌ Please attach a video file.\nExample: `!convert deep` + attach video")
+        return
+    
+    effect = effect.lower()
+    if effect not in FFMPEG_EFFECTS:
+        await ctx.reply(f"❌ Unknown effect `{effect}`.\nEffects: deep, chipmunk, robot, slow, fast")
+        return
+
+    att = ctx.message.attachments[0]
+
+    await ctx.reply("⬇️ Downloading video...")
+
+    tmpdir = tempfile.mkdtemp(prefix="bot_")
+    try:
+        # Paths
+        video_path = os.path.join(tmpdir, att.filename)
+        extracted = os.path.join(tmpdir, "audio.wav")
+        processed = os.path.join(tmpdir, "processed.wav")
+        output_mp3 = os.path.join(tmpdir, "voice_changed.mp3")
+
+        # Download video
+        await download_file(att.url, video_path)
+
+        # Extract audio
+        await ctx.reply("🎵 Extracting audio...")
+        cmd_extract = ["ffmpeg", "-y", "-i", video_path, "-vn", "-acodec", "pcm_s16le", "-ar", "44100", "-ac", "2", extracted]
+        code, out, err = run_cmd(cmd_extract)
+        if code != 0:
+            await ctx.reply("❌ Error extracting audio!")
+            return
+
+        # Apply effect
+        await ctx.reply(f"🔊 Applying `{effect}` effect...")
+        cmd_effect = FFMPEG_EFFECTS[effect](extracted, processed)
+        code, out, err = run_cmd(cmd_effect)
+        if code != 0:
+            await ctx.reply("❌ Error applying effect!")
+            return
+
+        # Convert to MP3
+        await ctx.reply("🎧 Converting to MP3...")
+        cmd_mp3 = ["ffmpeg", "-y", "-i", processed, "-vn", "-codec:a", "libmp3lame", "-qscale:a", "2", output_mp3]
+        code, out, err = run_cmd(cmd_mp3)
+        if code != 0:
+            await ctx.reply("❌ Error converting to MP3!")
+            return
+
+        # Send result
+        await ctx.reply("✅ **Voice changed successfully!**\nHere is your MP3:", file=discord.File(output_mp3))
+
+    except Exception as e:
+        await ctx.reply(f"❌ Error: `{e}`")
+
+    finally:
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# -------------------------------------------------------------
+# RUN BOT
+# -------------------------------------------------------------
+bot.run(TOKEN)
